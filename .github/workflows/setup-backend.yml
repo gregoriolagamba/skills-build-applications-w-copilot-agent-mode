@@ -1,0 +1,100 @@
+name: Setup Backend Environment
+
+on:
+  push:
+    branches:
+      - build-octofit-app
+  pull_request:
+    branches:
+      - build-octofit-app
+
+jobs:
+  setup-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ./.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/octofit-tracker/backend/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Create virtual environment
+        run: |
+          python -m venv octofit-tracker/backend/venv
+
+
+      - name: Upgrade pip
+        run: |
+          octofit-tracker/backend/venv/bin/python -m pip install --upgrade pip
+
+      - name: Split requirements (core / rest)
+        run: |
+          # pick a small set of core packages that are likely to take longer or are essential
+          CORE_PATTERN='^(Django|djangorestframework|django-allauth|dj-rest-auth|djongo|pymongo)'
+          REQ=octofit-tracker/backend/requirements.txt
+          CORE=octofit-tracker/backend/requirements-core.txt
+          REST=octofit-tracker/backend/requirements-rest.txt
+          grep -E "$CORE_PATTERN" "$REQ" > "$CORE" || true
+          grep -vE "$CORE_PATTERN" "$REQ" > "$REST" || true
+
+      - name: Install core backend requirements
+        run: |
+          if [ -s octofit-tracker/backend/requirements-core.txt ]; then
+            octofit-tracker/backend/venv/bin/python -m pip install --prefer-binary --disable-pip-version-check -r octofit-tracker/backend/requirements-core.txt
+          else
+            echo "No core requirements found, skipping"
+          fi
+
+      - name: Install remaining backend requirements (batch)
+        run: |
+          if [ -s octofit-tracker/backend/requirements-rest.txt ]; then
+            octofit-tracker/backend/venv/bin/python -m pip install --prefer-binary --disable-pip-version-check -r octofit-tracker/backend/requirements-rest.txt
+          else
+            echo "No remaining requirements found, skipping"
+          fi
+
+      - name: Show installed packages (short)
+        run: |
+          octofit-tracker/backend/venv/bin/python -m pip list --format=columns | sed -n '1,40p'
+
+      - name: Verify Django import
+        run: |
+          octofit-tracker/backend/venv/bin/python - <<'PY'
+          import django
+          print('Django version:', django.get_version())
+          PY
+
+      - name: Lightweight import checks
+        run: |
+          octofit-tracker/backend/venv/bin/python - <<'PY'
+          ok = True
+          try:
+              import rest_framework
+              import pymongo
+          except Exception as e:
+              print('Import failure:', e)
+              ok = False
+          if not ok:
+              raise SystemExit('Import checks failed')
+          print('Lightweight import checks: OK')
+          PY
+
+      - name: Install pytest into venv
+        run: |
+          octofit-tracker/backend/venv/bin/python -m pip install --disable-pip-version-check pytest
+
+      - name: Run pytest smoke tests
+        run: |
+          octofit-tracker/backend/venv/bin/python -m pytest -q octofit-tracker/backend/tests/test_smoke.py
